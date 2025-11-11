@@ -1,0 +1,32 @@
+name: Build Docker Image
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t api-escolar:latest .
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t api-escolar:latest .
+
+      - name: Roda os testes no container
+        run: docker run --rm api-escolar:latest python -m unittest test_app -v
