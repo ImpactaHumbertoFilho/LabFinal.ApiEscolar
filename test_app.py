@@ -12,15 +12,15 @@ class APITestCase(unittest.TestCase):
         # Criação do cliente de teste 
         cls.client = app.test_client()
     
-    def test_home_should_be_405(self):
+    def test_post_to_home_route_should_get_method_not_allowed(self):
         response = self.client.post('/')
         self.assertEqual(response.status_code, 405)
 
-    def test_login_should_get_method_not_allowed(self):
+    def test_get_to_login_route_should_get_method_not_allowed(self):
         response = self.client.get('/login')
         self.assertEqual(response.status_code, 405)
 
-    def test_protected_should_not_be_200(self):
+    def test_get_to_protected_route_without_jwt_should_not_be_200(self):
         response = self.client.get('/protected')
         self.assertNotEqual(response.status_code, 200)
 
