@@ -13,29 +13,30 @@ concurrency:
 permissions:
   contents: read
   packages: write
-  id-token: write # necessário para OIDC nos jobs de deploy
+  id-token: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: impactahumbertofilho/api-escolar
 
 jobs:
-  build-push:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.img.outputs.IMAGE }}
     steps:
-      # Baixa o código do repositório
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Setup QEMU: Permite emular diferentes arquiteturas de CPU (AMD64, ARM64, etc)
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
-      
-      # Setup Buildx: Configura o Docker Buildx para builds otimizados e multi-plataforma
+
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Autentica no GitHub Container Registry (GHCR) usando credenciais automáticas
       - name: Login no GHCR
         uses: docker/login-action@v3
         with:
@@ -43,53 +44,91 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gera metadados da imagem: tags (latest, SHA do commit) e labels
-      - name: Docker metadata
+      - name: Docker metadata (gera tag sha, sem latest)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
             type=sha
 
-      # Constrói a imagem Docker e faz push para GHCR apenas em push na branch main
-      - name: Build e Push
+      # Em PR: build local (sem push), carrega para testes
+      - name: Build (PR) – sem push, com load
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
-          context: .                                                              # Diretório base do build (raiz do projeto)
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}  # Push apenas se for push na main
-          platforms: linux/amd64                                                  # Arquitetura da imagem
-          tags: ${{ steps.meta.outputs.tags }}                                    # Tags geradas no passo anterior
-          labels: ${{ steps.meta.outputs.labels }}                                # Labels/metadados da imagem
+          context: .
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-      # Exporta o identificador único da imagem (digest SHA) como output para outros jobs
-      - name: Exporta nome da imagem
+      # Em push na main: build + push (apenas tag sha)
+      - name: Build e Push (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Exporta referência da imagem
         id: img
-        run: echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.meta.outputs.digest }}" >> $GITHUB_OUTPUT
-
-    # Permite que outros jobs acessem a variável de saída 'image'
-    outputs:
-      image: ${{ steps.img.outputs.IMAGE }}
+        run: |
+          if [ -n "${{ steps.meta.outputs.digest }}" ]; then
+            # main: referência imutável com digest (preferível para testes/consume)
+            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.meta.outputs.digest }}" >> $GITHUB_OUTPUT
+          else
+            # PR: usar a tag sha local carregada
+            SHA_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -n1)
+            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHA_TAG#*:}" >> $GITHUB_OUTPUT
+          fi
 
   test:
     runs-on: ubuntu-latest
-    needs: build-push
-
-    permissions: #Define permissoes para o job
-      contents: read 
+    needs: build
+    permissions:
+      contents: read
       packages: read
-
     steps:
-      - name: Checkout do codigo
-        uses: actions/checkout@v5
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v2
+      - name: Login no GHCR (apenas quando a imagem está remota)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }} # usando a variavel de ambiente REGISTRY -> ghcr.io
-          username: ${{ github.actor }} # usando o usuario do github que esta rodando a acao
-          password: ${{ secrets.GITHUB_TOKEN }} # usando o token do github para autenticar
-      
-      - name: Roda os testes no container # executa o container e roda os testes dentro dele
-        run: docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest python -m unittest test_app -v
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rodar testes no container (referência imutável)
+        run: |
+          IMAGE="${{ needs.build.outputs.image }}"
+          docker run --rm "$IMAGE" python -m unittest discover -v
+          # Se quiser um módulo específico:
+          # docker run --rm "$IMAGE" python -m unittest test_app -v
+
+  promote:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Setup Buildx (necessário para imagetools)
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote para :latest (sem rebuild)
+        run: |
+          SRC="${{ needs.build.outputs.image }}"
+          DEST="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          docker buildx imagetools create --tag "$DEST" "$SRC"
