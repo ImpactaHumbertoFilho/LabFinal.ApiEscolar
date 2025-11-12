@@ -93,14 +93,18 @@ jobs:
 
       # Exporta a referência imutável da imagem (com digest SHA256)
       # Usa o digest para garantir que sempre a mesma versão será usada nos testes e deploy
+      # Para PRs: usa a tag local (que foi carregada com load: true)
+      # Para main: usa a tag com digest do push para garantir imutabilidade
       - name: Exporta referência da imagem
         id: img
         run: |
-          if [ -n "${{ steps.build_main.outputs.digest }}" ]; then
+          if [ "${{ github.event_name }}" == "push" ] && [ -n "${{ steps.build_main.outputs.digest }}" ]; then
+            # Push na main: usa digest (referência imutável do registry)
             echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build_main.outputs.digest }}" >> $GITHUB_OUTPUT
           else
+            # PR: usa tag local (imagem carregada localmente)
             SHA_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -n1)
-            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHA_TAG#*:}" >> $GITHUB_OUTPUT
+            echo "IMAGE=$SHA_TAG" >> $GITHUB_OUTPUT
           fi
 
   # ===========================================================================
@@ -116,6 +120,11 @@ jobs:
       contents: read
       packages: read
     steps:
+      # Para PRs: faz checkout para ter acesso ao código local (necessário para a imagem carregada localmente)
+      - name: Checkout (necessário para PRs)
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+
       # Faz login no GHCR apenas quando a imagem está no registry remoto (push na main)
       # Para PRs, a imagem já está localmente carregada
       - name: Login no GHCR (quando imagem está remota)
@@ -127,7 +136,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Executa os testes da aplicação dentro da imagem Docker
-      # Usa a referência imutável (com digest) para garantir a mesma imagem testada
+      # Para PRs: usa a imagem local carregada pelo job build
+      # Para main: usa a referência imutável (com digest) do registry
       # O container é removido automaticamente após a execução (--rm)
       - name: Rodar testes no container (referência imutável)
         run: |
