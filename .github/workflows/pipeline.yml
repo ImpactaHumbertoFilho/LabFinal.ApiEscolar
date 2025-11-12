@@ -52,9 +52,10 @@ jobs:
           tags: |
             type=sha
 
-      # Em PR: build local (sem push), carrega para testes
+      # PR: build local (sem push)
       - name: Build (PR) – sem push, com load
         if: github.event_name == 'pull_request'
+        id: build_pr
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -64,9 +65,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # Em push na main: build + push (apenas tag sha)
+      # main: build + push (gera saída 'digest' neste passo)
       - name: Build e Push (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: build_main
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -78,9 +80,9 @@ jobs:
       - name: Exporta referência da imagem
         id: img
         run: |
-          if [ -n "${{ steps.meta.outputs.digest }}" ]; then
-            # main: referência imutável com digest (preferível para testes/consume)
-            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.meta.outputs.digest }}" >> $GITHUB_OUTPUT
+          if [ -n "${{ steps.build_main.outputs.digest }}" ]; then
+            # main: referência imutável com digest do passo build_main
+            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build_main.outputs.digest }}" >> $GITHUB_OUTPUT
           else
             # PR: usar a tag sha local carregada
             SHA_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -n1)
@@ -108,16 +110,16 @@ jobs:
           docker run --rm "$IMAGE" python -m unittest discover -v
           # Se quiser um módulo específico:
           # docker run --rm "$IMAGE" python -m unittest test_app -v
-
+  
   promote:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [build, test]    # <- precisa dos dois
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
     steps:
-      - name: Setup Buildx (necessário para imagetools)
+      - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login no GHCR
