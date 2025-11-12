@@ -24,7 +24,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    depends: build
+    needs: build
 
     steps:
       - name: Checkout do codigo
