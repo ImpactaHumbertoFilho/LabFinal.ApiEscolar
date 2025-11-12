@@ -24,8 +24,8 @@ jobs:
   # JOB: build
   # ===========================================================================
   # Responsável por construir a imagem Docker e fazer push para o GHCR.
-  # Para PRs: faz build local sem fazer push
-  # Para main: faz build e push da imagem para o registry
+  # Para PRs: faz build e push com tag temporária (pr-<PR_NUMBER>-<SHA>)
+  # Para main: faz build e push com tag SHA do commit
   build:
     runs-on: ubuntu-latest
     permissions:
@@ -54,29 +54,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gera tags de metadados baseada no SHA do commit (ex: sha-abc1234)
+      # Gera tags de metadados baseada no SHA do commit para main
       # Não usa a tag "latest" pois ela será promovida após testes bem-sucedidos
-      - name: Docker metadata (gera tag sha, sem latest)
-        id: meta
+      - name: Docker metadata (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: meta_main
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha
 
-      # Para Pull Requests: faz build local da imagem sem fazer push ao registry
-      # Útil para validar que o Dockerfile está correto antes de fazer merge
-      - name: Build (PR) sem push, com load
+      # Gera tags de metadados para PRs (tag temporária com número da PR)
+      # Facilita identificar qual PR gerou a imagem
+      - name: Docker metadata (PR)
+        if: github.event_name == 'pull_request'
+        id: meta_pr
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=pr
+            type=sha,prefix=pr-{{branch}}-
+
+      # Para Pull Requests: faz build e push ao GHCR com tag temporária
+      # A imagem fica no registry e pode ser acessada por outros jobs
+      - name: Build e Push (PR)
         if: github.event_name == 'pull_request'
         id: build_pr
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
-          load: true
+          push: true
           platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_pr.outputs.tags }}
+          labels: ${{ steps.meta_pr.outputs.labels }}
 
       # Para push na branch main: faz build e push da imagem para o GHCR
       # A imagem fica disponível no registry para os próximos jobs
@@ -88,23 +100,21 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_main.outputs.tags }}
+          labels: ${{ steps.meta_main.outputs.labels }}
 
       # Exporta a referência imutável da imagem (com digest SHA256)
       # Usa o digest para garantir que sempre a mesma versão será usada nos testes e deploy
-      # Para PRs: usa a tag local (que foi carregada com load: true)
-      # Para main: usa a tag com digest do push para garantir imutabilidade
+      # Funciona tanto para PRs como para main (ambos fazem push)
       - name: Exporta referência da imagem
         id: img
         run: |
           if [ "${{ github.event_name }}" == "push" ] && [ -n "${{ steps.build_main.outputs.digest }}" ]; then
-            # Push na main: usa digest (referência imutável do registry)
+            # Push na main: usa digest da build_main
             echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build_main.outputs.digest }}" >> $GITHUB_OUTPUT
-          else
-            # PR: usa tag local (imagem carregada localmente)
-            SHA_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -n1)
-            echo "IMAGE=$SHA_TAG" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "pull_request" ] && [ -n "${{ steps.build_pr.outputs.digest }}" ]; then
+            # PR: usa digest da build_pr
+            echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build_pr.outputs.digest }}" >> $GITHUB_OUTPUT
           fi
 
   # ===========================================================================
@@ -113,6 +123,7 @@ jobs:
   # Executa testes automatizados dentro da imagem Docker construída
   # Depende do job "build" ter sido concluído com sucesso
   # Valida que a aplicação está funcionando corretamente antes do deploy
+  # Roda para PRs e pushes na main
   test:
     runs-on: ubuntu-latest
     needs: build  # Aguarda o job "build" terminar antes de iniciar
@@ -120,15 +131,8 @@ jobs:
       contents: read
       packages: read
     steps:
-      # Para PRs: faz checkout para ter acesso ao código local (necessário para a imagem carregada localmente)
-      - name: Checkout (necessário para PRs)
-        if: github.event_name == 'pull_request'
-        uses: actions/checkout@v4
-
-      # Faz login no GHCR apenas quando a imagem está no registry remoto (push na main)
-      # Para PRs, a imagem já está localmente carregada
-      - name: Login no GHCR (quando imagem está remota)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Faz login no GHCR para acessar a imagem que foi feita push
+      - name: Login no GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -136,20 +140,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Executa os testes da aplicação dentro da imagem Docker
-      # Para PRs: usa a imagem local carregada pelo job build
-      # Para main: usa a referência imutável (com digest) do registry
+      # Usa a referência imutável (com digest) do registry
+      # Funciona tanto para PRs como para main
       # O container é removido automaticamente após a execução (--rm)
-      - name: Rodar testes no container (referência imutável)
+      - name: Rodar testes no container
         run: |
           IMAGE="${{ needs.build.outputs.image }}"
           docker run --rm "$IMAGE" python -m unittest discover -v
-          # ou: docker run --rm "$IMAGE" python -m unittest test_app -v
 
   # ===========================================================================
   # JOB: promote
   # ===========================================================================
   # Promove a imagem testada para a tag "latest" após testes bem-sucedidos
   # Utiliza imagetools para criar um alias sem rebuild, apenas reetiquetando
+  # Limpa imagens temporárias de PRs para economizar espaço
   # Só executa para push na branch main (não para PRs)
   promote:
     runs-on: ubuntu-latest
@@ -163,7 +167,7 @@ jobs:
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Autentica no GHCR para poder criar novas tags
+      # Autentica no GHCR para poder criar novas tags e deletar imagens
       - name: Login no GHCR
         uses: docker/login-action@v3
         with:
