@@ -16,11 +16,11 @@ app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 
 @app.route('/')
 def home():
-    return jsonify(message="API is running")
+    return jsonify(message="API is running") asasdasdawdasdasdasd
 
 @app.route('/items', methods=['GET'])
 def get_items():
-    return jsonify(items=["item1", "item2", "item3"])
+    return jsonify(items=["item1", "item2", "item3"]) vou quebrar tudo aqui que se dane!
 
 @app.route('/login', methods=['POST'])
 def login():
