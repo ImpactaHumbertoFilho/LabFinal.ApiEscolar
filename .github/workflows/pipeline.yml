@@ -23,14 +23,19 @@ jobs:
   build-push:
     runs-on: ubuntu-latest
     steps:
+      # Baixa o código do repositório
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Setup QEMU: Permite emular diferentes arquiteturas de CPU (AMD64, ARM64, etc)
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
+      
+      # Setup Buildx: Configura o Docker Buildx para builds otimizados e multi-plataforma
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Autentica no GitHub Container Registry (GHCR) usando credenciais automáticas
       - name: Login no GHCR
         uses: docker/login-action@v3
         with:
@@ -38,6 +43,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Gera metadados da imagem: tags (latest, SHA do commit) e labels
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -47,19 +53,22 @@ jobs:
             type=raw,value=latest
             type=sha
 
+      # Constrói a imagem Docker e faz push para GHCR apenas em push na branch main
       - name: Build e Push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          context: .                                                              # Diretório base do build (raiz do projeto)
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}  # Push apenas se for push na main
+          platforms: linux/amd64                                                  # Arquitetura da imagem
+          tags: ${{ steps.meta.outputs.tags }}                                    # Tags geradas no passo anterior
+          labels: ${{ steps.meta.outputs.labels }}                                # Labels/metadados da imagem
 
+      # Exporta o identificador único da imagem (digest SHA) como output para outros jobs
       - name: Exporta nome da imagem
         id: img
         run: echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.meta.outputs.digest }}" >> $GITHUB_OUTPUT
 
+    # Permite que outros jobs acessem a variável de saída 'image'
     outputs:
       image: ${{ steps.img.outputs.IMAGE }}
 
