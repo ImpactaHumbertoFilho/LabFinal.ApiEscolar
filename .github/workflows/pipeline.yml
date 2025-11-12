@@ -65,7 +65,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    needs: build
+    needs: build-push
 
     permissions: #Define permissoes para o job
       contents: read 
