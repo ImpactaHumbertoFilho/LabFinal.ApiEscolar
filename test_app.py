@@ -16,9 +16,9 @@ class APITestCase(unittest.TestCase):
         response = self.client.post('/')
         self.assertEqual(response.status_code, 405)
 
-    def test_get_to_login_route_should_get_method_not_allowed(self):
+    def test_get_to_login_route_should_get_200(self):
         response = self.client.get('/login')
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 200)
 
     def test_get_to_protected_route_without_jwt_should_not_be_200(self):
         response = self.client.get('/protected')
