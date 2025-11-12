@@ -20,23 +20,28 @@ env:
   IMAGE_NAME: impactahumbertofilho/api-escolar
 
 jobs:
+  # ===== Build =====
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      contents: read      # Lê o código do repositório
+      packages: write     # Escreve imagens no GHCR
     outputs:
-      image: ${{ steps.img.outputs.IMAGE }}
+      image: ${{ steps.img.outputs.IMAGE }}  # Exporta a referência da imagem para outros jobs
     steps:
+      # Baixa o código do repositório
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Setup QEMU: Permite emular diferentes arquiteturas de CPU (AMD64, ARM64, etc)
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
 
+      # Setup Buildx: Configura o Docker Buildx para builds otimizados e multi-plataforma
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Autentica no GitHub Container Registry (GHCR) usando credenciais automáticas
       - name: Login no GHCR
         uses: docker/login-action@v3
         with:
@@ -44,6 +49,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Gera metadados da imagem com tag SHA do commit (identificador único)
       - name: Docker metadata (gera tag sha, sem latest)
         id: meta
         uses: docker/metadata-action@v5
@@ -52,50 +58,55 @@ jobs:
           tags: |
             type=sha
 
-      # PR: build local (sem push)
+      # Em Pull Request: constrói a imagem localmente sem fazer push (apenas testa o build)
       - name: Build (PR) – sem push, com load
         if: github.event_name == 'pull_request'
         id: build_pr
         uses: docker/build-push-action@v6
         with:
-          context: .
-          push: false
-          load: true
-          platforms: linux/amd64
+          context: .                          # Diretório base do build (raiz do projeto)
+          push: false                         # Não faz push
+          load: true                          # Carrega a imagem localmente
+          platforms: linux/amd64              # Arquitetura da imagem
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      # main: build + push (gera saída 'digest' neste passo)
+      # Na branch main: constrói a imagem e faz push para GHCR (gera digest SHA imutável)
       - name: Build e Push (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: build_main
         uses: docker/build-push-action@v6
         with:
-          context: .
-          push: true
-          platforms: linux/amd64
+          context: .                          # Diretório base do build
+          push: true                          # Faz push para o GHCR
+          platforms: linux/amd64              # Arquitetura da imagem
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      # Exporta o identificador único da imagem: usa digest se for main, ou SHA da tag se for PR
       - name: Exporta referência da imagem
         id: img
         run: |
           if [ -n "${{ steps.build_main.outputs.digest }}" ]; then
-            # main: referência imutável com digest do passo build_main
+            # main: referência imutável com digest SHA (nunca muda, mesmo com rebuild)
             echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build_main.outputs.digest }}" >> $GITHUB_OUTPUT
           else
-            # PR: usar a tag sha local carregada
+            # PR: usa a tag SHA da imagem carregada localmente
             SHA_TAG=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | head -n1)
             echo "IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHA_TAG#*:}" >> $GITHUB_OUTPUT
           fi
 
+  # ===== Testes =====
   test:
     runs-on: ubuntu-latest
     needs: build
+    
     permissions:
       contents: read
       packages: read
+    
     steps:
+      # Autentica no GHCR apenas quando a imagem está no repositório remoto (branch main)
       - name: Login no GHCR (apenas quando a imagem está remota)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
@@ -104,6 +115,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Executa os testes dentro do container usando a imagem construída no job 'build'
       - name: Rodar testes no container (referência imutável)
         run: |
           IMAGE="${{ needs.build.outputs.image }}"
@@ -111,17 +123,24 @@ jobs:
           # Se quiser um módulo específico:
           # docker run --rm "$IMAGE" python -m unittest test_app -v
   
+  # ===== Promove tag de :latest =====
   promote:
     runs-on: ubuntu-latest
-    needs: [build, test]    # <- precisa dos dois
+    needs: [build, test]
+
+    # Executa apenas na branch main ignorando PRs
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
     permissions:
       contents: read
       packages: write
+    
     steps:
+      # Setup Buildx: Necessário para usar imagetools (cria aliases de tags sem rebuild)
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Autentica no GHCR para ter permissão de escrever/modificar tags
       - name: Login no GHCR
         uses: docker/login-action@v3
         with:
@@ -129,6 +148,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Cria um alias da imagem com tag 'latest' usando a referência do build (sem rebuild)
       - name: Promote para :latest (sem rebuild)
         run: |
           SRC="${{ needs.build.outputs.image }}"
