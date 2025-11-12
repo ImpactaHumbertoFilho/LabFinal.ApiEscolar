@@ -12,10 +12,28 @@ jobs:
 
     steps:
       - name: Checkout do codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      
       - name: Build Docker image
         run: docker build -t api-escolar:latest .
 
-      - name: Roda os testes no container
-        run: docker run --rm api-escolar:latest python -m unittest test_app -v
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      
+      - name: Roda os testes localmente
+        run: |
+          python -m unittest test_app -v
